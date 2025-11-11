@@ -1,0 +1,214 @@
+-- =====================================================================
+-- BANCO DE DADOS ELETRÔNICA - COM TABELA CADASTRO (RH/GERAL)
+-- =====================================================================
+
+CREATE DATABASE IF NOT EXISTS eletronica
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_0900_ai_ci;
+
+USE eletronica;
+
+SET default_storage_engine = InnoDB;
+
+-- =====================================================================
+-- 1) SEGURANÇA / USUÁRIOS E CADASTRO
+-- =====================================================================
+
+-- PAPÉIS
+
+CREATE TABLE IF NOT EXISTS papeis (
+  id             SMALLINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  nome           VARCHAR(50)  NOT NULL,
+  descricao      VARCHAR(255) NULL,
+  criado_em      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  atualizado_em  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_papeis_nome (nome)
+) ENGINE=InnoDB;
+
+-- CADASTRO (funcionários, clientes, fornecedores, etc.)
+-- Gabriel
+CREATE TABLE IF NOT EXISTS cadastro (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  cpf              VARCHAR(20) NULL,
+  nome             VARCHAR(160) NOT NULL,
+  email            VARCHAR(160) NULL,
+  telefone         VARCHAR(30) NULL,
+  endereco         VARCHAR(255) NULL,
+  cargo            VARCHAR(80) NULL,
+  senha			   VARCHAR(255) NULL,
+  data_nascimento  VARCHAR(30),
+  data_admissao    VARCHAR(30),
+  data_demissao    VARCHAR(30),
+  ativo            TINYINT(1) NOT NULL DEFAULT 1,
+  observacoes      TEXT NULL,
+  criado_em        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  atualizado_em    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  excluido_em      DATETIME NULL,
+  PRIMARY KEY (id),
+  KEY idx_cadastro_nome (nome)
+) ENGINE=InnoDB;
+
+select * from cadastro;
+
+-- USUÁRIOS (login por CPF + senha, senha até 255 caracteres)
+-- Gabriel
+CREATE TABLE IF NOT EXISTS usuarios (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  cpf              CHAR(20) NOT NULL,
+  senha_hash       VARCHAR(255) NOT NULL,
+  ativo            TINYINT(1) NOT NULL DEFAULT 1,
+  id_papel         SMALLINT UNSIGNED NULL,
+  id_cadastro      BIGINT UNSIGNED NULL,
+  criado_em        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  atualizado_em    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_usuarios_cpf (cpf),
+  CONSTRAINT fk_usuarios_papel FOREIGN KEY (id_papel) REFERENCES papeis(id)
+    ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT fk_usuarios_cadastro FOREIGN KEY (id_cadastro) REFERENCES cadastro(id)
+    ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- =====================================================================
+-- 2) CADASTROS PRINCIPAIS DO SISTEMA
+-- =====================================================================
+
+-- DEPÓSITOS
+CREATE TABLE IF NOT EXISTS depositos (
+-- Gustavo
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  codigo         VARCHAR(20)  NOT NULL,
+  nome           VARCHAR(120) NOT NULL,
+  endereco       VARCHAR(255) NULL,
+  ativo          TINYINT(1) NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_depositos_codigo (codigo)
+) ENGINE=InnoDB;
+
+-- PEÇAS
+CREATE TABLE IF NOT EXISTS pecas (
+-- Gustavo
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  tipo_peca      VARCHAR(160) NOT NULL,
+  modelo         VARCHAR(120) NULL,
+  marca          VARCHAR(120) NULL,
+  estado         VARCHAR(10) NULL,
+  quantidade     INT NOT NULL DEFAULT 0,
+  quantidade_min INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB;
+select* from pecas;
+-- ESTOQUE
+-- Gustavo
+CREATE TABLE IF NOT EXISTS estoque (
+  id_deposito    BIGINT UNSIGNED NOT NULL,
+  id_peca        BIGINT UNSIGNED NOT NULL,
+  quantidade     INT NOT NULL DEFAULT 0,
+  atualizado_em  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id_deposito, id_peca),
+  CONSTRAINT fk_estoque_dep FOREIGN KEY (id_deposito) REFERENCES depositos(id)
+      ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT fk_estoque_peca FOREIGN KEY (id_peca) REFERENCES pecas(id)
+      ON UPDATE CASCADE ON DELETE RESTRICT
+) ENGINE=InnoDB;
+
+-- MOVIMENTAÇÕES DE PEÇAS
+-- Gustavo
+CREATE TABLE IF NOT EXISTS movimentacoes_pecas (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id_deposito      BIGINT UNSIGNED NOT NULL,
+  id_peca          BIGINT UNSIGNED NOT NULL,
+  tipo_movimentacao ENUM('ENTRADA','SAIDA') NOT NULL,
+  quantidade       INT NOT NULL,
+  motivo           VARCHAR(255) NULL,
+  criado_em        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  CONSTRAINT fk_mov_dep FOREIGN KEY (id_deposito) REFERENCES depositos(id),
+  CONSTRAINT fk_mov_peca FOREIGN KEY (id_peca) REFERENCES pecas(id)
+) ENGINE=InnoDB;
+select* from movimentacoes_pecas;
+-- NOTIFICAÇÕES
+-- Gustavo
+CREATE TABLE IF NOT EXISTS notificacoes (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id_deposito   BIGINT UNSIGNED NOT NULL,
+  id_peca       BIGINT UNSIGNED NOT NULL,
+  mensagem      VARCHAR(255) NOT NULL,
+  visto         TINYINT(1) NOT NULL DEFAULT 0,
+  criado_em     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  CONSTRAINT fk_notif_dep FOREIGN KEY (id_deposito) REFERENCES depositos(id),
+  CONSTRAINT fk_notif_peca FOREIGN KEY (id_peca) REFERENCES pecas(id)
+) ENGINE=InnoDB;
+
+-- =====================================================================
+-- 3) TRIGGERS
+-- =====================================================================
+
+DELIMITER $$
+
+-- Trigger: impedir saída maior que o saldo
+CREATE TRIGGER bi_movimentacoes_pecas
+BEFORE INSERT ON movimentacoes_pecas
+FOR EACH ROW
+BEGIN
+  DECLARE v_saldo INT;
+
+  IF NEW.quantidade <= 0 THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'Quantidade da movimentacao deve ser maior que zero.';
+  END IF;
+
+  IF NEW.tipo_movimentacao = 'SAIDA' THEN
+    SELECT quantidade INTO v_saldo
+    FROM estoque
+    WHERE id_deposito = NEW.id_deposito
+      AND id_peca = NEW.id_peca
+    LIMIT 1;
+
+    IF v_saldo IS NULL THEN
+      SET v_saldo = 0;
+    END IF;
+
+    IF NEW.quantidade > v_saldo THEN
+      SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Saldo insuficiente para realizar a saída.';
+    END IF;
+  END IF;
+END$$
+
+-- Trigger: atualizar saldo e gerar notificação
+CREATE TRIGGER ai_movimentacoes_pecas
+AFTER INSERT ON movimentacoes_pecas
+FOR EACH ROW
+BEGIN
+  DECLARE v_saldo INT;
+  DECLARE v_min   INT;
+
+  INSERT INTO estoque (id_deposito, id_peca, quantidade)
+  VALUES (NEW.id_deposito, NEW.id_peca,
+          IF(NEW.tipo_movimentacao='ENTRADA', NEW.quantidade, -NEW.quantidade))
+  ON DUPLICATE KEY UPDATE quantidade = 
+      IF(NEW.tipo_movimentacao='ENTRADA',
+         quantidade + NEW.quantidade,
+         quantidade - NEW.quantidade);
+
+  SELECT quantidade INTO v_saldo
+  FROM estoque
+  WHERE id_deposito = NEW.id_deposito
+    AND id_peca = NEW.id_peca
+  LIMIT 1;
+
+  SELECT quantidade_min INTO v_min
+  FROM pecas
+  WHERE id = NEW.id_peca;
+
+  IF v_saldo <= v_min THEN
+    INSERT INTO notificacoes (id_deposito, id_peca, mensagem)
+    VALUES (NEW.id_deposito, NEW.id_peca,
+            CONCAT('Estoque baixo para a peça ID ', NEW.id_peca, '. Saldo atual: ', v_saldo));
+  END IF;
+END$$
+
+DELIMITER ;
